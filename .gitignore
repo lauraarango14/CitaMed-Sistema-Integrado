@@ -50,3 +50,25 @@ desktop.ini
 # =========================
 *.backup
 *.bak
+
+# =========================
+# CitaMed - Archivos locales y compilados
+# =========================
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Maven
+target/
+
+# Compilados y entregables
+01_Codigo_Compilado/
+ENTREGABLES_GA8/
+ENTREGABLES_GA8.zip
+
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+

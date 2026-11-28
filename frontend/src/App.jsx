@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 
 const API_BASE = 'http://localhost:8080'
@@ -27,12 +27,15 @@ async function solicitarTokenCsrf() {
 }
 
 function App() {
+  const [vistaActual, setVistaActual] = useState('inicio')
   const [usuarioActual, setUsuarioActual] = useState(null)
+  const esAdmin = usuarioActual?.rol === 'ADMIN'
   const [csrfToken, setCsrfToken] = useState('')
   const [verificandoSesion, setVerificandoSesion] = useState(true)
   const [credenciales, setCredenciales] = useState({ usuario: '', contrasena: '' })
   const [mensajeLogin, setMensajeLogin] = useState('')
   const [cargandoLogin, setCargandoLogin] = useState(false)
+  const [mostrarFormularioCita, setMostrarFormularioCita] = useState(false)
 
   const [pacientes, setPacientes] = useState([])
   const [formulario, setFormulario] = useState(formularioVacio)
@@ -41,9 +44,52 @@ function App() {
   const [mostrarFormulario, setMostrarFormulario] = useState(false)
   const [mensaje, setMensaje] = useState('')
   const [cargando, setCargando] = useState(false)
+  const [citas, setCitas] = useState([])
+  const [busquedaCita, setBusquedaCita] = useState('')
 
   const [mostrarRegistroAdmin, setMostrarRegistroAdmin] = useState(false)
   const [nuevoAdmin, setNuevoAdmin] = useState({ usuario: '', contrasena: '' })
+  
+
+    const cargarCitas = async () => {
+      try {
+        const respuesta = await fetch('http://localhost:8080/api/citas', {
+          credentials: 'include'
+        })
+
+        if (!respuesta.ok) {
+          throw new Error('Error al consultar las citas')
+        }
+
+        const datos = await respuesta.json()
+        setCitas(datos)
+
+      } catch (error) {
+        console.error('Error cargando citas:', error)
+      }
+    }
+
+    const citasFiltradas = citas.filter((cita) => {
+    const busqueda = busquedaCita.toLowerCase()
+
+    return (
+      cita.paciente?.nombre?.toLowerCase().includes(busqueda) ||
+      cita.paciente?.apellido?.toLowerCase().includes(busqueda) ||
+      cita.medico?.toLowerCase().includes(busqueda) ||
+      cita.especialidad?.toLowerCase().includes(busqueda) ||
+      cita.estado?.toLowerCase().includes(busqueda)
+    )
+  })
+  
+useEffect(() => {
+  if (!usuarioActual) return
+
+  const timer = setTimeout(() => {
+    cargarCitas()
+  }, 0)
+
+  return () => clearTimeout(timer)
+}, [usuarioActual])
 
   useEffect(() => {
     async function verificarSesion() {
@@ -66,26 +112,65 @@ function App() {
     verificarSesion()
   }, [])
 
-  async function cargarPacientes() {
-    setCargando(true)
+  const cargarPacientes = useCallback(async () => {
+  try {
+    const respuesta = await fetch(API_URL, { credentials: 'include' })
+
+    if (respuesta.status === 401 || respuesta.status === 403) {
+      setUsuarioActual(null)
+      throw new Error('Tu sesión terminó. Inicia sesión nuevamente.')
+    }
+
+    if (!respuesta.ok) {
+      throw new Error('No se pudieron consultar los pacientes.')
+    }
+
+    setPacientes(await respuesta.json())
+  } catch (error) {
+    setMensaje(error.message || 'No fue posible consultar los pacientes.')
+  } finally {
+    setCargando(false)
+  }
+}, [])
+
+useEffect(() => {
+  if (!esAdmin) return
+
+  let cancelado = false
+
+  async function consultarPacientes() {
     try {
-      const respuesta = await fetch(API_URL, { credentials: 'include' })
+      const respuesta = await fetch(API_URL, {
+        credentials: 'include'
+      })
+
       if (respuesta.status === 401 || respuesta.status === 403) {
-        setUsuarioActual(null)
-        throw new Error('Tu sesión terminó. Inicia sesión nuevamente.')
+        if (!cancelado) setUsuarioActual(null)
+        return
       }
-      if (!respuesta.ok) throw new Error('No se pudieron consultar los pacientes.')
-      setPacientes(await respuesta.json())
+
+      if (!respuesta.ok) {
+        throw new Error('No se pudieron consultar los pacientes.')
+      }
+
+      const datos = await respuesta.json()
+
+      if (!cancelado) {
+        setPacientes(datos)
+      }
     } catch (error) {
-      setMensaje(error.message || 'No fue posible consultar los pacientes.')
-    } finally {
-      setCargando(false)
+      if (!cancelado) {
+        setMensaje(error.message || 'No fue posible consultar los pacientes.')
+      }
     }
   }
 
-  useEffect(() => {
-    if (usuarioActual) cargarPacientes()
-  }, [usuarioActual])
+  consultarPacientes()
+
+  return () => {
+    cancelado = true
+  }
+}, [esAdmin])
 
   const pacientesFiltrados = pacientes.filter((paciente) =>
     `${paciente.nombre} ${paciente.apellido} ${paciente.documento}`
@@ -177,6 +262,7 @@ function App() {
     evento.preventDefault()
     setCargandoLogin(true)
     setMensajeLogin('')
+
     try {
       const token = csrfToken || await solicitarTokenCsrf()
       setCsrfToken(token)
@@ -189,10 +275,21 @@ function App() {
         },
         body: JSON.stringify(credenciales),
       })
+
       const datos = await respuesta.json()
-      if (!respuesta.ok) throw new Error(datos.error || 'No fue posible iniciar sesión.')
-      const sesion = await fetch(`${AUTH_URL}/me`, { credentials: 'include' })
-      if (!sesion.ok) throw new Error('Se validaron las credenciales, pero no se pudo recuperar la sesión.')
+
+      if (!respuesta.ok) {
+        throw new Error(datos.error || 'No fue posible iniciar sesión.')
+      }
+
+      const sesion = await fetch(`${AUTH_URL}/me`, {
+        credentials: 'include'
+      })
+
+      if (!sesion.ok) {
+        throw new Error('Se validaron las credenciales, pero no se pudo recuperar la sesión.')
+      }
+
       setUsuarioActual(await sesion.json())
       setCredenciales({ usuario: '', contrasena: '' })
     } catch (error) {
@@ -249,14 +346,55 @@ function App() {
     return <div className="auth-screen"><div className="auth-card"><strong>CitaMed</strong><p>Verificando sesión segura...</p></div></div>
   }
 
-  if (!usuarioActual) {
-    return (
-      <main className="auth-screen">
-        <form className="auth-card" onSubmit={iniciarSesion}>
+if (usuarioActual && !esAdmin) {
+  return (
+    <main className="auth-screen">
+      <section className="auth-card">
+        <div className="auth-brand-icon">+</div>
+
+        <p className="auth-eyebrow">GESTIÓN MÉDICA</p>
+
+        <h1>Bienvenido a CitaMed</h1>
+
+        <p className="auth-description">
+          Tu sesión se encuentra activa y autenticada.
+        </p>
+
+        <div className="patient-form">
+          <h3>Información de tu sesión</h3>
+
+          <p>
+            <strong>Usuario:</strong> {usuarioActual.usuario}
+          </p>
+
+          <p>
+            <strong>Rol:</strong> {usuarioActual.rol}
+          </p>
+
+          <p>
+            <strong>Estado:</strong> Sesión activa
+          </p>
+        </div>
+
+        <button
+          className="primary-button auth-submit"
+          type="button"
+          onClick={cerrarSesion}
+        >
+          Cerrar sesión
+        </button>
+      </section>
+    </main>
+  )
+}
+if (!usuarioActual) {
+  return (
+    <main className="auth-screen">
+      <form className="auth-card" onSubmit={iniciarSesion}>
           <div className="auth-brand-icon">+</div>
           <p className="auth-eyebrow">GESTIÓN MÉDICA</p>
           <h1>Bienvenida a CitaMed</h1>
-          <p className="auth-description">Inicia sesión con una cuenta de administrador para acceder al sistema.</p>
+          <p className="auth-description">Inicia sesión con tus credenciales para acceder al sistema.</p>
           {mensajeLogin && <div className="message auth-message" role="alert">{mensajeLogin}</div>}
           <label>Usuario
             <input autoComplete="username" value={credenciales.usuario} onChange={(e) => setCredenciales((v) => ({ ...v, usuario: e.target.value }))} required />
@@ -267,11 +405,12 @@ function App() {
           <button className="primary-button auth-submit" type="submit" disabled={cargandoLogin}>
             {cargandoLogin ? 'Verificando...' : 'Iniciar sesión'}
           </button>
-          <small className="auth-footnote">Acceso exclusivo para administradores autorizados.</small>
+          <small className="auth-footnote">Acceso seguro al sistema CitaMed.</small>
         </form>
       </main>
     )
   }
+  
 
   return (
     <div className="app">
@@ -282,16 +421,413 @@ function App() {
         </div>
         <p className="menu-label">MENÚ PRINCIPAL</p>
         <nav className="navigation">
-          <a href="#inicio" className="nav-item"><span>⌂</span> Inicio</a>
-          <a href="#pacientes" className="nav-item active"><span>♙</span> Pacientes</a>
-          <a href="#citas" className="nav-item"><span>▦</span> Citas médicas</a>
+          <button
+            type="button"
+            className={`nav-item ${vistaActual === 'inicio' ? 'active' : ''}`}
+            onClick={() => setVistaActual('inicio')}
+          >
+            <span>⌂</span> Inicio
+          </button>
+
+          <button
+            type="button"
+            className={`nav-item ${vistaActual === 'pacientes' ? 'active' : ''}`}
+            onClick={() => setVistaActual('pacientes')}
+          >
+            <span>♙</span> Pacientes
+          </button>
+
+          <button
+            type="button"
+            className={`nav-item ${vistaActual === 'citas' ? 'active' : ''}`}
+            onClick={() => setVistaActual('citas')}
+          >
+            <span>▦</span> Citas médicas
+          </button>
         </nav>
         <div className="sidebar-footer">
           <div className="avatar">AD</div>
-          <div><strong>{usuarioActual.usuario}</strong><span>Administrador</span></div>
+          <div>
+            <strong>{usuarioActual.usuario}</strong>
+            <span>{usuarioActual.rol}</span>
+          </div>
         </div>
       </aside>
 
+      {vistaActual === 'inicio' && (
+        <main className="main-content" id="inicio">
+          <header className="topbar">
+            <div>
+              <span className="breadcrumb">Sistema médico / Inicio</span>
+              <h1>Dashboard</h1>
+              <p>Resumen general del sistema de gestión médica.</p>
+            </div>
+
+            <div className="topbar-actions">
+              <div className="topbar-status">
+                <span className="status-dot" />
+                Sesión protegida
+              </div>
+
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={cerrarSesion}
+              >
+                Cerrar sesión
+              </button>
+            </div>
+          </header>
+
+          <section className="welcome-card">
+            <div>
+              <span className="welcome-label">PANEL PRINCIPAL</span>
+              <h2>¡Bienvenida a CitaMed!</h2>
+              <p>
+                Administra la información y los procesos de tu sistema
+                de gestión de citas médicas desde un solo lugar.
+              </p>
+            </div>
+
+            <div className="welcome-symbol" aria-hidden="true">
+              ✚
+            </div>
+          </section>
+
+          <section className="stats-grid">
+            <article className="stat-card">
+              <span className="stat-icon blue">♙</span>
+              <span className="stat-label">Pacientes registrados</span>
+              <strong>{pacientes.length}</strong>
+              <small>Registros almacenados</small>
+            </article>
+
+            <article className="stat-card">
+              <span className="stat-icon green">✓</span>
+              <span className="stat-label">Estado del sistema</span>
+              <strong>Activo</strong>
+              <small>Sesión autenticada</small>
+            </article>
+
+            <article className="stat-card">
+              <span className="stat-icon purple">▦</span>
+              <span className="stat-label">Módulos disponibles</span>
+              <strong>1</strong>
+              <small>Gestión de pacientes</small>
+            </article>
+          </section>
+
+          <section className="content-card dashboard-content">
+            <div className="section-heading">
+              <div>
+                <h2>Accesos rápidos</h2>
+                <p>Ingresa rápidamente a los módulos del sistema.</p>
+              </div>
+            </div>
+
+            <div className="dashboard-shortcuts">
+              <button
+                type="button"
+                className="shortcut-card"
+                onClick={() => setVistaActual('pacientes')}
+              >
+                <span className="shortcut-icon">♙</span>
+                <strong>Gestionar pacientes</strong>
+                <span>Consultar, registrar, editar y eliminar pacientes.</span>
+                <span className="shortcut-link">Ir al módulo →</span>
+              </button>
+
+              <article className="shortcut-card shortcut-disabled">
+                <span className="shortcut-icon">▦</span>
+                <strong>Citas médicas</strong>
+                <span>Próximamente: programación y gestión de citas.</span>
+                <span className="shortcut-link">Módulo en desarrollo</span>
+              </article>
+            </div>
+          </section>
+
+          <section className="content-card dashboard-info">
+            <h2>Información del sistema</h2>
+
+            <div className="system-info-grid">
+              <div>
+                <span>Aplicación</span>
+                <strong>CitaMed</strong>
+              </div>
+
+              <div>
+                <span>Frontend</span>
+                <strong>React</strong>
+              </div>
+
+              <div>
+                <span>Backend</span>
+                <strong>Spring Boot</strong>
+              </div>
+
+              <div>
+                <span>Base de datos</span>
+                <strong>MySQL</strong>
+              </div>
+            </div>
+          </section>
+
+          <footer className="page-footer">
+            Sistema de Gestión de Citas Médicas · Proyecto formativo
+          </footer>
+        </main>
+      )}
+
+      {vistaActual === 'citas' && (
+        <main className="main-content" id="citas">
+          <header className="topbar">
+            <div>
+              <span className="breadcrumb">Sistema médico / Citas</span>
+              <h1>Gestión de citas médicas</h1>
+              <p>Programa y consulta las citas médicas de los pacientes.</p>
+            </div>
+
+            <div className="topbar-actions">
+              <div className="topbar-status">
+                <span className="status-dot" />
+                Sesión protegida
+              </div>
+
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={cerrarSesion}
+              >
+                Cerrar sesión
+              </button>
+            </div>
+          </header>
+
+          <section className="stats-grid">
+            <article className="stat-card">
+              <span className="stat-icon blue">▦</span>
+              <span className="stat-label">Total de citas</span>
+              <strong>0</strong>
+              <small>Sin citas registradas</small>
+            </article>
+
+            <article className="stat-card">
+              <span className="stat-icon green">✓</span>
+              <span className="stat-label">Estado</span>
+              <strong>Programación</strong>
+              <small>Gestión de citas médicas</small>
+            </article>
+
+            <article className="stat-card">
+              <span className="stat-icon purple">♙</span>
+              <span className="stat-label">Pacientes disponibles</span>
+              <strong>{pacientes.length}</strong>
+              <small>Registrados en el sistema</small>
+            </article>
+          </section>
+
+          <section className="content-card">
+            <div className="section-heading">
+              <div>
+                <h2>Listado de citas</h2>
+                <p>Consulta y administra las citas médicas programadas.</p>
+              </div>
+
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => setMostrarFormularioCita((v) => !v)}
+              >
+                {mostrarFormularioCita ? 'Cancelar' : '+ Nueva cita'}
+              </button>
+            </div>
+
+            {mostrarFormularioCita && (
+              <form
+                className="patient-form"
+                onSubmit={async (evento) => {
+                  evento.preventDefault()
+
+                  const formulario = evento.target
+                  const datosFormulario = new FormData(formulario)
+
+                  const nuevaCita = {
+                    paciente: {
+                      id: Number(datosFormulario.get('paciente'))
+                    },
+                    medico: datosFormulario.get('medico'),
+                    especialidad: datosFormulario.get('especialidad'),
+                    consultorio: datosFormulario.get('consultorio'),
+                    fecha: datosFormulario.get('fecha'),
+                    hora: datosFormulario.get('hora'),
+                    estado: datosFormulario.get('estado'),
+                    motivoConsulta: datosFormulario.get('motivoConsulta')
+                  }
+
+                  try {
+                    const token = await solicitarTokenCsrf()
+
+                    const respuesta = await fetch('http://localhost:8080/api/citas', {
+                      method: 'POST',
+                      credentials: 'include',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'X-XSRF-TOKEN': token
+                      },
+                      body: JSON.stringify(nuevaCita)
+                    })
+
+                    if (!respuesta.ok) {
+                      const mensaje = await respuesta.text()
+                      throw new Error(mensaje || 'Error al guardar la cita')
+                    }
+
+                    await cargarCitas()
+                    formulario.reset()
+                    setMostrarFormularioCita(false)
+                    alert('¡Cita guardada correctamente!')
+
+                  } catch (error) {
+                    console.error('Error guardando cita:', error)
+                    alert(error.message || 'No fue posible guardar la cita.')
+                  }
+                }}
+              >
+                <h3>Programar nueva cita</h3>
+
+                <div className="form-grid">
+                  <label>Paciente
+                    <select name="paciente" required defaultValue="">
+                      <option value="" disabled>Seleccionar paciente</option>
+                      {pacientes.map((paciente) => (
+                        <option key={paciente.id} value={paciente.id}>
+                          {paciente.nombre} {paciente.apellido} - {paciente.documento}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>Médico
+                    <input name="medico" type="text" placeholder="Nombre del médico" required />
+                  </label>
+
+                  <label>Especialidad
+                    <input name="especialidad" type="text" placeholder="Ej. Medicina general" required />
+                  </label>
+
+                  <label>Consultorio
+                    <input name="consultorio" type="text" placeholder="Ej. Consultorio 101" required />
+                  </label>
+
+                  <label>Fecha de la cita
+                    <input name="fecha" type="date" required />
+                  </label>
+
+                  <label>Hora
+                    <input name="hora" type="time" required />
+                  </label>
+
+                  <label>Estado
+                    <select name="estado" defaultValue="Programada" required>
+                      <option value="Programada">Programada</option>
+                      <option value="Confirmada">Confirmada</option>
+                      <option value="Pendiente">Pendiente</option>
+                      <option value="Cancelada">Cancelada</option>
+                    </select>
+                  </label>
+
+                  <label>Motivo de consulta
+                    <input
+                      name="motivoConsulta"
+                      type="text"
+                      placeholder="Describe brevemente el motivo"
+                      required
+                    />
+                  </label>
+                </div>
+
+                <div className="form-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => setMostrarFormularioCita(false)}
+                  >
+                    Cancelar
+                  </button>
+
+                  <button className="primary-button" type="submit">
+                    Guardar cita
+                  </button>
+                </div>
+              </form>
+            )}
+
+           <div className="table-toolbar">
+              <input
+                className="search-input"
+                type="search"
+                placeholder="Buscar citas..."
+                aria-label="Buscar citas"
+                value={busquedaCita}
+                onChange={(evento) => setBusquedaCita(evento.target.value)}
+              />
+
+              <span>{citas.length} registros</span>
+            </div>
+
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Paciente</th>
+                    <th>Médico</th>
+                    <th>Especialidad</th>
+                    <th>Fecha</th>
+                    <th>Hora</th>
+                    <th>Estado</th>
+                  </tr>
+                </thead>
+                
+                <tbody>
+                  {citas.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="empty-state">
+                        No hay citas registradas actualmente.
+                        <br />
+                        Utiliza el botón <strong>+ Nueva cita</strong> para comenzar.
+                      </td>
+                    </tr>
+                  ) : (
+                    citasFiltradas.map((cita) => (
+                      <tr key={cita.id}>
+                        <td>
+                          {cita.paciente?.nombre} {cita.paciente?.apellido}
+                        </td>
+                        <td>{cita.medico}</td>
+                        <td>{cita.especialidad}</td>
+                        <td>{cita.fecha}</td>
+                        <td>{cita.hora}</td>
+                        <td>{cita.estado}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <p className="demo-notice">
+              La interfaz de programación de citas está en construcción.
+              Próximamente se conectará con el servidor Spring Boot y MySQL.
+            </p>
+          </section>
+
+          <footer className="page-footer">
+            Sistema de Gestión de Citas Médicas · Proyecto formativo
+          </footer>
+        </main>
+      )}
+
+      {vistaActual === 'pacientes' && (
       <main className="main-content" id="pacientes">
         <header className="topbar">
           <div>
@@ -307,15 +843,6 @@ function App() {
             <button className="secondary-button" type="button" onClick={cerrarSesion}>Cerrar sesión</button>
           </div>
         </header>
-
-        <section className="welcome-card">
-          <div>
-            <span className="welcome-label">PANEL DE ADMINISTRACIÓN</span>
-            <h2>¡Bienvenida a CitaMed!</h2>
-            <p>Mantén organizada la información de los pacientes desde un solo lugar.</p>
-          </div>
-          <div className="welcome-symbol" aria-hidden="true">✚</div>
-        </section>
 
         {mostrarRegistroAdmin && (
           <form className="patient-form admin-form" onSubmit={registrarAdministrador}>
@@ -385,13 +912,14 @@ function App() {
                   </tr>
                 ))}
                 {!cargando && pacientesFiltrados.length === 0 && <tr><td colSpan={5} className="empty-state">No se encontraron pacientes.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <p className="demo-notice">Los pacientes se consultan y guardan en la base de datos MySQL mediante el servidor Spring Boot.</p>
-        </section>
+                </tbody>
+              </table>
+            </div>
+
+          </section>
         <footer className="page-footer">Sistema de Gestión de Citas Médicas · Proyecto formativo</footer>
       </main>
+      )}
     </div>
   )
 }
